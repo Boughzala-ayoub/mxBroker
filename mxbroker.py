@@ -115,6 +115,7 @@ class Session:
 
     def __init__(self, home, show_gui=False):
         self.show_gui = show_gui
+        self.last = "-"  # last command handed to MX, for 'status'
         java = home / "jre" / "bin" / "java.exe"
         self.proc = subprocess.Popen(
             [str(java) if java.exists() else "java", "-jar",
@@ -181,6 +182,26 @@ class Session:
                 if status:  # raw on the wire; the client decides how to filter it
                     return "".join(chunks), status
 
+    def state(self):
+        """One line of what the session actually holds - the point of 'status'.
+
+        A warm session is mutable shared state, so 'daemon is up' is not the useful
+        answer; 'which MCU is loaded' is. Asked of CubeMX rather than inferred from the
+        commands seen, because 'config load' changes it too.
+        """
+        if self.proc.poll() is not None:
+            return "CubeMX exited"
+        if not self.ready:
+            return "warming up"
+        # ponytail: benign race - a command starting right here just makes status queue
+        # behind it, same as any other request.
+        if self.lock.locked():
+            return f"busy: {self.last}"
+        out, status = self.run("get mcu name", 30)
+        lines = [l for l in clean(out).splitlines() if not done_status(l)]
+        mcu = lines[0] if status == "OK" and lines else "no mcu loaded"
+        return f"{mcu}, last: {self.last}"
+
     def kill(self):
         try:
             self.proc.stdin.write("exit\n")
@@ -209,11 +230,12 @@ def serve(home, show_gui=False):
                 return
             op = req.get("op", "run")
             if op == "ping":
-                reply = {"output": "ready" if session.ready else "warming up", "status": "OK"}
+                reply = {"output": session.state(), "status": "OK"}
             elif op == "stop":
                 reply = {"output": "stopped", "status": "OK"}
                 threading.Thread(target=shutdown, daemon=True).start()
             else:
+                session.last = req["cmd"]
                 out, status = session.run(req["cmd"], req.get("timeout", DEFAULT_TIMEOUT))
                 reply = {"output": out, "status": status}
             self.wfile.write((json.dumps(reply) + "\n").encode())

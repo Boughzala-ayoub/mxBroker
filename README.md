@@ -26,7 +26,7 @@ mxbroker stop
 | `start [--cubemx-home DIR] [--gui]` | launch the daemon; `CUBEMX_HOME` is the fallback. `--gui` leaves CubeMX's window on screen, otherwise it is hidden |
 | `stop` | send `exit` to CubeMX, shut the daemon down |
 | `restart [--cubemx-home DIR] [--gui]` | |
-| `status` | `running (pid, port, ready)` / `not running` |
+| `status` | what the session actually holds — `running (pid, port, STM32F407V(E-G)Tx, last: set mode I2C1 I2C)`, or `warming up` / `busy: <cmd>` / `no mcu loaded` / `not running` |
 | `"<cmd>" ["<cmd>" ...]` | run console commands in order, stop at the first `KO`. `--timeout SECONDS` (default 600), `--raw` |
 
 Commands are CubeMX's own console vocabulary — `load <mcu>`, `config load|saveas`,
@@ -63,6 +63,12 @@ Covers the response parser: `67768 OK` / `2 KO` terminate a response with the ri
 lookalikes don't, and log4j noise is stripped. No CubeMX process required.
 
 ## Limits
+
+A warm session is **shared mutable state** — the opposite of the `-q` path, where every call
+is a fresh process and the `.ioc` is the only truth. That is the trade this tool makes for
+speed, so `status` reports what CubeMX is actually holding (asked of CubeMX, not inferred —
+`config load` changes the MCU too) rather than just "daemon up". When in doubt,
+`config load <ioc>` before a batch and you are back on solid ground.
 
 One session, one command at a time. A crashed CubeMX is reported as `KO`, not auto-restarted —
 `mxbroker restart`.
