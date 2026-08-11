@@ -1,0 +1,4 @@
+# daemon runtime state - contains the loopback auth token
+.mxbroker.json
+.mxbroker.log
+__pycache__/
