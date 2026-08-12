@@ -26,8 +26,9 @@ from pathlib import Path
 from queue import Empty, Queue
 
 HERE = Path(__file__).resolve().parent
-STATE = HERE / ".mxbroker.json"
-LOG = HERE / ".mxbroker.log"
+NAME = "default"          # instance selected by --name; each gets its own daemon + CubeMX
+STATE = HERE / ".mxbroker-default.json"
+LOG = HERE / ".mxbroker-default.log"
 PROMPT = "MX> "
 DEFAULT_TIMEOUT = 600
 # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP - daemon must not hold the terminal.
@@ -211,6 +212,7 @@ class Session:
             pass
         if self.proc.poll() is None:
             self.proc.kill()
+            self.proc.wait(5)  # so 'stop' does not return while CubeMX is still teardown
 
 
 # ---------------------------------------------------------------- daemon
@@ -258,6 +260,38 @@ def serve(home, show_gui=False):
 
 
 # ---------------------------------------------------------------- client
+
+def set_instance(name):
+    global NAME, STATE, LOG
+    NAME = name
+    STATE = HERE / f".mxbroker-{name}.json"
+    LOG = HERE / f".mxbroker-{name}.log"
+
+
+def cubemx_pids():
+    """PIDs of broker-spawned CubeMX sessions: java.exe running 'STM32CubeMX.exe ... -i'.
+
+    A hand-launched CubeMX runs under its own launcher as STM32CubeMX.exe and has no -i,
+    so the reaper can never take out a GUI session you opened yourself.
+    """
+    if sys.platform != "win32":
+        return []
+    out = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
+         "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"],
+        capture_output=True, text=True, creationflags=NO_WINDOW).stdout
+    pids = []
+    for line in out.splitlines():
+        pid, _, cmd = line.partition("\t")
+        if pid.strip().isdigit() and "STM32CubeMX.exe" in cmd and cmd.rstrip().endswith("-i"):
+            pids.append(int(pid))
+    return pids
+
+
+def instances():
+    return sorted(f.stem.split("-", 1)[1] for f in HERE.glob(".mxbroker-*.json"))
+
 
 def load_state():
     if not STATE.exists():
@@ -317,12 +351,18 @@ def pop_flag(args, name):
 
 USAGE = """mxbroker - stateless CLI over a warm STM32CubeMX -i session
 
+Any command takes --name NAME to address a second instance (own daemon, own CubeMX,
+~830MB each); without it you get the 'default' one.
+
   mxbroker start [--cubemx-home DIR] [--gui]
                                        launch the daemon (CUBEMX_HOME is the fallback).
                                        CubeMX's window is hidden unless you pass --gui.
   mxbroker stop                        exit CubeMX, shut the daemon down
+  mxbroker stop --all                  stop every instance, then kill CubeMX sessions
+                                       whose daemon died and left them running
   mxbroker restart [--cubemx-home DIR] [--gui]
   mxbroker status
+  mxbroker ls                          every instance and what it holds
   mxbroker "<cmd>" ["<cmd>" ...]       run console commands, stop at the first KO
                                        [--timeout SECONDS, default 600] [--raw]
                                        --raw prints CubeMX's log stream unfiltered
@@ -335,26 +375,93 @@ toolchain, set mode ..., set ip parameters ..., csv pinout <file>, project gener
 Exit codes: 0 OK, 1 KO or timeout, 2 usage / no daemon / CubeMX not found."""
 
 
+def wait_for_warmups(cap=180):
+    """Never let two CubeMX instances boot at the same time.
+
+    They share ~/.stm32cubemx (prefs, MCU/pack DB), and a second one booting into that
+    contention wedges permanently: 0% CPU, no dialog, its frame stuck on the bare title.
+    Staggered, instances coexist fine - so just queue the warmups.
+    """
+    mine, deadline, told = NAME, time.monotonic() + cap, False
+    while time.monotonic() < deadline:
+        booting = None
+        for other in instances():
+            if other == mine:
+                continue
+            set_instance(other)  # load_state/alive read the globals; restored below
+            ping = alive(load_state())
+            if ping and ping["output"] == "warming up":
+                booting = other
+                break
+        set_instance(mine)
+        if not booting:
+            return
+        if not told:
+            print(f"waiting for {booting} to finish booting (two at once wedge each other)")
+            told = True
+        time.sleep(2)
+
+
 def cmd_start(args):
     gui = ["--gui"] if pop_flag(args, "--gui") else []
     home = resolve_home(pop_opt(args, "--cubemx-home"))
     if alive(load_state()):
         print("already running")
         return 0
+    wait_for_warmups()
     STATE.unlink(missing_ok=True)
     with open(LOG, "w") as log:
         subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
-                          "_daemon", "--cubemx-home", str(home)] + gui,
+                          "_daemon", "--name", NAME, "--cubemx-home", str(home)] + gui,
                          stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                          creationflags=DETACHED, close_fds=True)
     for _ in range(100):
         state = load_state()
         if state:
-            print(f"daemon up (pid {state['pid']}, port {state['port']})")
+            print(f"daemon up ({NAME}, pid {state['pid']}, port {state['port']})")
             print("CubeMX is warming up (~15s); the first command will wait for it.")
             return 0
         time.sleep(0.1)
     die(2, f"daemon did not start; see {LOG}")
+
+
+def cmd_ls():
+    if not instances():
+        print("no instances")
+        return 2
+    for name in instances():
+        set_instance(name)
+        state = load_state()
+        ping = alive(state)
+        if ping:
+            print(f"{name:<10} pid {state['pid']:<7} {ping['output']}")
+        else:
+            STATE.unlink(missing_ok=True)
+            print(f"{name:<10} stale, removed")
+    return 0
+
+
+def cmd_stop_all():
+    for name in instances():
+        set_instance(name)
+        state = load_state()
+        if alive(state):
+            ask(state, {"op": "stop"}, 30)
+            for _ in range(200):
+                if not STATE.exists():
+                    break
+                time.sleep(0.1)
+            print(f"stopped {name} (pid {state['pid']})")
+        else:
+            STATE.unlink(missing_ok=True)
+    # Every daemon is down now, so a '-i' session still alive has lost its owner: killing
+    # a daemon from Task Manager leaves ~830MB of CubeMX behind with nothing to reap it.
+    orphans = cubemx_pids()
+    for pid in orphans:
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                       capture_output=True, creationflags=NO_WINDOW)
+    print(f"killed {len(orphans)} orphaned CubeMX process(es)" if orphans else "no orphans")
+    return 0
 
 
 def main(argv):
@@ -364,7 +471,12 @@ def main(argv):
         print(USAGE)
         return 0 if args else 2
 
+    set_instance(pop_opt(args, "--name", "default"))
+    if not args:
+        die(2, "--name needs a command after it")
     op = args[0]
+    if op == "ls":
+        return cmd_ls()
     if op == "_daemon":
         serve(resolve_home(pop_opt(args, "--cubemx-home")), pop_flag(args, "--gui"))
         return 0
@@ -392,6 +504,8 @@ def main(argv):
         print(f"running (pid {state['pid']}, port {state['port']}, {ping['output']})")
         return 0
     if op == "stop":
+        if pop_flag(args, "--all"):
+            return cmd_stop_all()
         if not alive(state):
             STATE.unlink(missing_ok=True)
             print("not running")

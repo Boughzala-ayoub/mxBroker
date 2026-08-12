@@ -26,6 +26,9 @@ mxbroker stop
 | `start [--cubemx-home DIR] [--gui]` | launch the daemon; `CUBEMX_HOME` is the fallback. `--gui` leaves CubeMX's window on screen, otherwise it is hidden |
 | `stop` | send `exit` to CubeMX, shut the daemon down |
 | `restart [--cubemx-home DIR] [--gui]` | |
+| `--name NAME` | on any command: address a second instance (own daemon + CubeMX). Default is `default` |
+| `ls` | every instance and what it holds |
+| `stop --all` | stop every instance, then kill orphaned CubeMX sessions |
 | `status` | what the session actually holds — `running (pid, port, STM32F407V(E-G)Tx, last: set mode I2C1 I2C)`, or `warming up` / `busy: <cmd>` / `no mcu loaded` / `not running` |
 | `"<cmd>" ["<cmd>" ...]` | run console commands in order, stop at the first `KO`. `--timeout SECONDS` (default 600), `--raw` |
 
@@ -34,6 +37,49 @@ Commands are CubeMX's own console vocabulary — `load <mcu>`, `config load|save
 `project generate`. The broker is a pipe, not a wrapper; run `mxbroker "help"` for the full list.
 
 Exit codes: **0** OK · **1** KO or timeout · **2** usage / no daemon / CubeMX not found.
+
+## Several instances
+
+`--name` gives you a second everything — own daemon, own port, own CubeMX, own session
+state. Two projects, no clobbering:
+
+```powershell
+mxbroker start                            # the 'default' instance
+mxbroker --name h7 start
+mxbroker "load STM32G474RETx"
+mxbroker --name h7 "load STM32F407VGTx"
+
+mxbroker ls
+  default    pid 38932   STM32G474R(B-C-E)Tx, last: load STM32G474RETx
+  h7         pid 18948   STM32F407V(E-G)Tx, last: load STM32F407VGTx
+```
+
+Each instance costs ~830 MB and a ~15s boot, so this is for parallel work, not for tidiness.
+
+**Two CubeMX instances must not boot at the same time.** They share `~/.stm32cubemx`
+(prefs, MCU/pack DB), and the second one to start into that contention wedges permanently:
+0% CPU, no dialog, its window stuck on the bare `STM32CubeMX` title. Started one after the
+other they coexist happily, so `start` waits for any other instance to finish warming up
+before it spawns — you cannot hit this by accident, but it does mean a `start` can block
+for ~15s and say so.
+
+### Reaping strays
+
+`stop` shuts down one instance. `stop --all` shuts down every instance, then kills CubeMX
+sessions whose daemon is gone — kill a daemon from Task Manager and its `java.exe` lives on
+holding ~830 MB with nothing to reap it:
+
+```
+mxbroker ls
+  default    pid 38932   STM32G474R(B-C-E)Tx, last: load STM32G474RETx
+  h7         stale, removed
+mxbroker stop --all
+  stopped default (pid 38932)
+  killed 1 orphaned CubeMX process(es)
+```
+
+Only `java.exe` processes running `STM32CubeMX.exe ... -i` are candidates. A CubeMX you
+opened yourself runs under its own launcher without `-i`, so the reaper cannot touch it.
 
 ## Paths with spaces
 
