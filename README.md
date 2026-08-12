@@ -35,6 +35,34 @@ Commands are CubeMX's own console vocabulary — `load <mcu>`, `config load|save
 
 Exit codes: **0** OK · **1** KO or timeout · **2** usage / no daemon / CubeMX not found.
 
+## Paths with spaces
+
+CubeMX splits its command line on whitespace, so a path with a space must reach it quoted —
+and PowerShell 5.1 *strips* embedded quotes when it calls a native command, so the obvious
+spelling silently truncates the path at the space:
+
+```powershell
+mxbroker "project path C:\Users\me\Nouveau dossier"    # -> CubeMX gets ...\Nouveau
+mxbroker 'project path "C:\Users\me\Nouveau dossier"'  # -> same, quotes eaten
+```
+
+Pipe the commands in instead — stdin is never re-parsed by the shell:
+
+```powershell
+'project path "C:\Users\me\Nouveau dossier"' | mxbroker -
+@('project path "C:\out dir"', 'config saveas "C:\out dir\app.ioc"') | mxbroker -
+```
+
+Or escape the inner quotes as `\"` if you want to stay on the argument form:
+
+```powershell
+mxbroker 'project path \"C:\Users\me\Nouveau dossier\"'
+$cmd = 'config saveas \"' + $dir + '\app.ioc\"'; mxbroker $cmd
+```
+
+No trailing backslash inside the quotes — `dossier\` + `\"` collapses into an escaped
+backslash and the quote is lost.
+
 ## How it works
 
 The `-i` console prints `MX> ` as a prompt (no trailing newline) and terminates every

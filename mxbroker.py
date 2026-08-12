@@ -326,6 +326,9 @@ USAGE = """mxbroker - stateless CLI over a warm STM32CubeMX -i session
   mxbroker "<cmd>" ["<cmd>" ...]       run console commands, stop at the first KO
                                        [--timeout SECONDS, default 600] [--raw]
                                        --raw prints CubeMX's log stream unfiltered
+  ... | mxbroker -                     read commands from stdin, one per line. Use this
+                                       for paths with spaces - no shell quoting to fight:
+                                         'project path "C:\\out dir"' | mxbroker -
 
 Console commands are CubeMX's own: load <mcu>, config load|saveas, project name|path|
 toolchain, set mode ..., set ip parameters ..., csv pinout <file>, project generate.
@@ -370,6 +373,14 @@ def main(argv):
     if op == "restart":
         main([argv[0], "stop"])
         return cmd_start(args[1:])
+
+    # Paths with spaces need quotes MX can see, but PowerShell strips embedded quotes on
+    # the way to a native command. Piping the commands in dodges argv parsing entirely.
+    if op == "-":
+        # PowerShell puts a UTF-8 BOM ahead of the first piped line; CubeMX would read it
+        # as part of the command name and answer with a usage dump.
+        piped = sys.stdin.read().lstrip("﻿ï»¿")
+        args = args[1:] + [l.strip() for l in piped.splitlines() if l.strip()]
 
     state = load_state()
     if op == "status":
