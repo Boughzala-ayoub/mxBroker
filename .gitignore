@@ -1,4 +1,4 @@
 # per-instance daemon state - contains the loopback auth token
-.mxbroker-*.json
-.mxbroker-*.log
+.mxbroker*.json
+.mxbroker*.log
 __pycache__/

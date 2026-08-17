@@ -519,11 +519,17 @@ def main(argv):
         return 0
 
     raw = pop_flag(args, "--raw")
-    timeout = int(pop_opt(args, "--timeout", DEFAULT_TIMEOUT))
+    try:
+        timeout = int(pop_opt(args, "--timeout", DEFAULT_TIMEOUT))
+    except ValueError:
+        die(2, "--timeout needs a number of seconds")
     if not alive(state):
         die(2, "daemon not running - start it with: mxbroker start")
     for cmd in args:
-        reply = ask(state, {"op": "run", "cmd": cmd, "timeout": timeout}, timeout)
+        try:
+            reply = ask(state, {"op": "run", "cmd": cmd, "timeout": timeout}, timeout)
+        except (OSError, ValueError):
+            die(2, f"daemon died mid-command: {cmd}")
         print(reply["output"] if raw else clean(reply["output"]))
         if reply["status"] != "OK":
             print(f"[{reply['status']}] {cmd}", file=sys.stderr)

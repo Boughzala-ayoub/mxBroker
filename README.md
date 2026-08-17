@@ -123,8 +123,8 @@ log4j** instead — `get mode_param_list I2C1 I2C` emits
 stripped; every other timestamped line is CubeMX plumbing and is dropped. If something you
 expect is still missing, `--raw` prints the stream untouched.
 
-State lives in `.mxbroker.json` beside the script (port, pid, auth token); daemon stdout goes
-to `.mxbroker.log`. The socket is loopback-only and token-checked — any local process can
+State lives in `.mxbroker-<name>.json` beside the script (port, pid, auth token); daemon
+stdout goes to `.mxbroker-<name>.log`. The socket is loopback-only and token-checked — any local process can
 connect to a listening port.
 
 ## Test
