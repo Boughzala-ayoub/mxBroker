@@ -145,7 +145,10 @@ speed, so `status` reports what CubeMX is actually holding (asked of CubeMX, not
 `config load <ioc>` before a batch and you are back on solid ground.
 
 One session, one command at a time. A crashed CubeMX is reported as `KO`, not auto-restarted —
-`mxbroker restart`.
+`mxbroker restart`. A command that hits `--timeout` keeps running inside CubeMX; the next
+command first waits for the old one's (discarded) output to finish arriving, so replies can
+never shift onto the wrong command — if it is still going, you get a `KO` telling you to wait
+or restart.
 
 **No windows.** `-i` cannot run headless — `-Djava.awt.headless=true` dies at startup with
 `java.awt.HeadlessException` — so CubeMX always builds its Swing frame. The daemon hides it

@@ -127,6 +127,7 @@ class Session:
         self.q = Queue()
         self.lock = threading.Lock()
         self.ready = False
+        self.stale = 0  # commands whose terminator was never read (timeouts)
         threading.Thread(target=self._pump, daemon=True).start()
         threading.Thread(target=self._warmup, daemon=True).start()
 
@@ -165,16 +166,32 @@ class Session:
         with self.lock:
             if self.proc.poll() is not None:
                 return "CubeMX session died (exit %s)" % self.proc.returncode, "KO"
+            deadline = time.monotonic() + timeout
+            # A timed-out command's output (terminator included) still arrives later. Eat
+            # those leftovers first, or this command would read the OLD terminator as its
+            # own reply and every response after that shifts by one.
+            while self.stale:
+                try:
+                    item = self.q.get(timeout=max(0, deadline - time.monotonic()))
+                except Empty:
+                    return ("previous command still running - wait and retry, "
+                            "or 'mxbroker restart'"), "KO"
+                if item is None:
+                    return "CubeMX session died", "KO"
+                if done_status(item):
+                    self.stale -= 1
             self.proc.stdin.write(cmd + "\n")
             self.proc.stdin.flush()
-            chunks, deadline = [], time.monotonic() + timeout
+            chunks = []
             while True:
                 left = deadline - time.monotonic()
                 if left <= 0:
+                    self.stale += 1
                     return "".join(chunks), "TIMEOUT"
                 try:
                     item = self.q.get(timeout=left)
                 except Empty:
+                    self.stale += 1
                     return "".join(chunks), "TIMEOUT"
                 if item is None:
                     return "".join(chunks), "KO"

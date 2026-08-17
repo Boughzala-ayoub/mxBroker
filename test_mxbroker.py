@@ -1,6 +1,10 @@
-"""Self-check for the response parser - the only non-trivial logic. No CubeMX needed."""
+"""Self-check for the response parser and the session read loop. No CubeMX needed."""
 
-from mxbroker import clean, done_status
+import io
+import threading
+from queue import Queue
+
+from mxbroker import Session, clean, done_status
 
 # the two terminators seen on the wire
 assert done_status("67768 OK\r") == "OK"
@@ -29,5 +33,39 @@ assert out.splitlines() == ["PA0 : ADC1_IN0",
                             "I2C1 | ClockSpeed = 100000",
                             "67768 OK"], out
 assert clean("MX> Bye bye") == "Bye bye"
+
+
+# --- Session.run against a hand-fed queue: normal reply, timeout, and the desync
+# --- hazard (a timed-out command's late output must not answer the next command).
+
+class FakeProc:
+    returncode = None
+    stdin = io.StringIO()
+    def poll(self):
+        return None
+
+s = Session.__new__(Session)
+s.proc, s.q, s.lock, s.ready, s.stale = FakeProc(), Queue(), threading.Lock(), True, 0
+
+s.q.put("PA0 : ADC1_IN0\n")
+s.q.put("12 OK\n")
+assert s.run("csv pinout x", 5) == ("PA0 : ADC1_IN0\n12 OK\n", "OK")
+
+# slow command times out with nothing read yet
+assert s.run("project generate", 0.05) == ("", "TIMEOUT")
+assert s.stale == 1
+
+# ...its output lands later; the next command must skip past the old terminator
+s.q.put("generating...\n")
+s.q.put("99 OK\n")          # terminator of the timed-out command
+s.q.put("v6.18.0\n")
+s.q.put("3 OK\n")           # terminator of OUR command
+assert s.run("get version", 5) == ("v6.18.0\n3 OK\n", "OK")
+assert s.stale == 0
+
+# still running and nothing arrives: honest KO, and still owed one terminator
+assert s.run("x", 0.05) == ("", "TIMEOUT")
+assert s.run("y", 0.05)[1] == "KO"
+assert s.stale == 1
 
 print("ok")
