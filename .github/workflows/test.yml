@@ -2,7 +2,7 @@ name: test
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest   # the parser test is pure Python, no CubeMX needed
+    runs-on: windows-latest   # where mxbroker runs; still pure Python, no CubeMX needed
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

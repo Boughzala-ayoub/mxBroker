@@ -44,6 +44,9 @@ NOISE = re.compile(r"^\d{4}-\d{2}-\d{2}|^Picked up |^log4j ")
 # plumbing (IPUIPlugin, PackLoader, PluginManager, ...), so keep this one logger and
 # strip its prefix. Anything else buried in the log stream: run with --raw.
 RESULT = re.compile(r"^\d{4}-\d{2}-\d{2}\s+\S+\s+\[\w+\]\s+IP:\d+ - (.*)$")
+# --name lands in a filename next to this script; a separator would place state
+# (and the log we truncate on start) anywhere on disk.
+NAME_OK = re.compile(r"[A-Za-z0-9._-]+")
 
 
 # ---------------------------------------------------------------- pure helpers
@@ -200,21 +203,29 @@ class Session:
                 if status:  # raw on the wire; the client decides how to filter it
                     return "".join(chunks), status
 
-    def state(self):
-        """One line of what the session actually holds - the point of 'status'.
+    def health(self):
+        """Liveness, answered from our own state - no CubeMX round trip.
 
-        A warm session is mutable shared state, so 'daemon is up' is not the useful
-        answer; 'which MCU is loaded' is. Asked of CubeMX rather than inferred from the
-        commands seen, because 'config load' changes it too.
+        Every client invocation pings before it does anything, so this one must stay free.
         """
         if self.proc.poll() is not None:
             return "CubeMX exited"
         if not self.ready:
             return "warming up"
-        # ponytail: benign race - a command starting right here just makes status queue
-        # behind it, same as any other request.
-        if self.lock.locked():
-            return f"busy: {self.last}"
+        # ponytail: benign race - a command starting right here just makes the next
+        # request queue behind it, same as any other.
+        return f"busy: {self.last}" if self.lock.locked() else "ready"
+
+    def state(self):
+        """One line of what the session actually holds - the point of 'status' and 'ls'.
+
+        A warm session is mutable shared state, so 'daemon is up' is not the useful
+        answer; 'which MCU is loaded' is. Asked of CubeMX rather than inferred from the
+        commands seen, because 'config load' changes it too. Costs a round trip.
+        """
+        health = self.health()
+        if health != "ready":
+            return health
         out, status = self.run("get mcu name", 30)
         lines = [l for l in clean(out).splitlines() if not done_status(l)]
         mcu = lines[0] if status == "OK" and lines else "no mcu loaded"
@@ -249,6 +260,8 @@ def serve(home, show_gui=False):
                 return
             op = req.get("op", "run")
             if op == "ping":
+                reply = {"output": session.health(), "status": "OK"}
+            elif op == "status":
                 reply = {"output": session.state(), "status": "OK"}
             elif op == "stop":
                 reply = {"output": "stopped", "status": "OK"}
@@ -280,6 +293,8 @@ def serve(home, show_gui=False):
 
 def set_instance(name):
     global NAME, STATE, LOG
+    if not NAME_OK.fullmatch(name):
+        die(2, f"bad --name {name!r}: letters, digits, dot, underscore, hyphen only")
     NAME = name
     STATE = HERE / f".mxbroker-{name}.json"
     LOG = HERE / f".mxbroker-{name}.log"
@@ -334,13 +349,16 @@ def ask(state, req, timeout):
     return json.loads(data.decode())
 
 
-def alive(state):
-    """A connect+ping is the only honest liveness check; no pid tables needed."""
+def alive(state, op="ping"):
+    """A connect+ping is the only honest liveness check; no pid tables needed.
+
+    op="status" asks the same question but pays a CubeMX round trip for the loaded MCU.
+    """
     if not state:
         return None
     try:
-        return ask(state, {"op": "ping"}, 10)
-    except OSError:
+        return ask(state, {"op": op}, 40)
+    except (OSError, ValueError):
         return None
 
 
@@ -449,7 +467,7 @@ def cmd_ls():
     for name in instances():
         set_instance(name)
         state = load_state()
-        ping = alive(state)
+        ping = alive(state, "status")
         if ping:
             print(f"{name:<10} pid {state['pid']:<7} {ping['output']}")
         else:
@@ -500,7 +518,7 @@ def main(argv):
     if op == "start":
         return cmd_start(args[1:])
     if op == "restart":
-        main([argv[0], "stop"])
+        main([argv[0], "--name", NAME, "stop"])  # re-entry re-parses --name from scratch
         return cmd_start(args[1:])
 
     # Paths with spaces need quotes MX can see, but PowerShell strips embedded quotes on
@@ -513,7 +531,7 @@ def main(argv):
 
     state = load_state()
     if op == "status":
-        ping = alive(state)
+        ping = alive(state, "status")
         if not ping:
             STATE.unlink(missing_ok=True)
             print("not running")

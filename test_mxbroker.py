@@ -1,9 +1,12 @@
 """Self-check for the response parser and the session read loop. No CubeMX needed."""
 
 import io
+import tempfile
 import threading
+from pathlib import Path
 from queue import Queue
 
+import mxbroker
 from mxbroker import Session, clean, done_status
 
 # the two terminators seen on the wire
@@ -67,5 +70,23 @@ assert s.stale == 0
 assert s.run("x", 0.05) == ("", "TIMEOUT")
 assert s.run("y", 0.05)[1] == "KO"
 assert s.stale == 1
+
+
+# --- CLI routing: --name must reach 'restart', and must never escape the script dir.
+
+mxbroker.HERE = Path(tempfile.mkdtemp())  # so no real instance's state file is touched
+
+started = []
+mxbroker.cmd_start = lambda args: started.append(mxbroker.NAME) or 0
+mxbroker.main(["mxbroker", "--name", "h7", "restart"])
+assert started == ["h7"], started  # used to stop and restart 'default' instead
+
+for bad in ("../x", r"..\\outside", "a/b", r"C:\x", "", "no spaces"):
+    try:
+        mxbroker.main(["mxbroker", "--name", bad, "status"])
+    except SystemExit as e:
+        assert e.code == 2, bad
+    else:
+        assert False, f"accepted --name {bad!r}"
 
 print("ok")
