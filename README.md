@@ -12,7 +12,7 @@ No install, no dependencies — Python 3.11 stdlib only.
 ## Use
 
 ```
-set CUBEMX_HOME=C:\Users\ayoub\Documents\mx
+set CUBEMX_HOME=C:\ST\STM32CubeMX
 
 mxbroker start                          daemon up (pid 31932, port 53154)   [returns in 0.2s]
 mxbroker "load STM32F407VGTx"           7779 OK      (first call waits ~8s for CubeMX warmup)
